@@ -1,0 +1,151 @@
+diff --git a/docs/API.md b/docs/API.md
+index ff6b362..fcf662e 100644
+--- a/docs/API.md
++++ b/docs/API.md
+@@ -33,6 +33,7 @@
+ | GET | `/api/circulation/readers/{id}/loans` | 读者借阅记录 |
+ | GET | `/api/circulation/readers/{id}/reservations` | 读者预约记录 |
+ | GET | `/api/circulation/admin/overdue` | 逾期清单 |
++| GET | `/api/circulation/admin/loans?status=&overdueOnly=` | 按状态或逾期条件筛选借阅记录 |
+ | POST | `/api/circulation/admin/loans/{id}/remind` | 对逾期借阅发起系统催还 |
+ | GET | `/api/circulation/admin/reminders` | 查询催还历史 |
+ 
+diff --git a/src/main/java/com/chopinhhm/library/modulec/CirculationController.java b/src/main/java/com/chopinhhm/library/modulec/CirculationController.java
+index 85844d4..700d41f 100644
+--- a/src/main/java/com/chopinhhm/library/modulec/CirculationController.java
++++ b/src/main/java/com/chopinhhm/library/modulec/CirculationController.java
+@@ -22,7 +22,11 @@ public class CirculationController {
+     @GetMapping("/readers/{readerId}/loans") public List<Loan> readerLoans(@PathVariable Long readerId) { accessGuard.assertReaderAccess(readerId); return service.readerLoans(readerId); }
+     @GetMapping("/readers/{readerId}/reservations") public List<Reservation> readerReservations(@PathVariable Long readerId) { accessGuard.assertReaderAccess(readerId); return service.readerReservations(readerId); }
+     @PostMapping("/reservations/{reservationId}/cancel") public Reservation cancel(@PathVariable Long reservationId) { accessGuard.assertReaderAccess(service.readerIdForReservation(reservationId)); return service.cancelReservation(reservationId); }
+-    @GetMapping("/admin/loans") public List<Loan> allLoans() { return service.allLoans(); }
++    @GetMapping("/admin/loans")
++    public List<Loan> allLoans(@RequestParam(required = false) Loan.Status status,
++                               @RequestParam(defaultValue = "false") boolean overdueOnly) {
++        return service.allLoans(status, overdueOnly);
++    }
+     @GetMapping("/admin/overdue") public List<Loan> overdue() { return service.overdueLoans(); }
+     @GetMapping("/admin/reminders") public List<OverdueReminder> reminders() { return service.reminders(); }
+     @PostMapping("/admin/loans/{loanId}/remind") public OverdueReminder remind(@PathVariable Long loanId) { return service.sendReminder(loanId); }
+diff --git a/src/main/java/com/chopinhhm/library/modulec/CirculationService.java b/src/main/java/com/chopinhhm/library/modulec/CirculationService.java
+index c2cbf7a..8e9dabc 100644
+--- a/src/main/java/com/chopinhhm/library/modulec/CirculationService.java
++++ b/src/main/java/com/chopinhhm/library/modulec/CirculationService.java
+@@ -61,6 +61,7 @@ public class CirculationService {
+     @Transactional
+     public Loan renew(Long loanId) {
+         Loan loan = activeLoan(loanId);
++        if (loan.getDueAt().isBefore(LocalDate.now())) throw new BusinessException("逾期图书不能续借，请先归还并结算罚金");
+         if (loan.getRenewCount() >= loan.getReader().getReaderType().getMaxRenewals()) throw new BusinessException("已达到最大续借次数");
+         if (reservations.existsByBookIdAndStatus(loan.getBook().getId(), Reservation.Status.ACTIVE)) throw new BusinessException("该图书已被预约，不能续借");
+         loan.setRenewCount(loan.getRenewCount() + 1);
+@@ -79,7 +80,10 @@ public class CirculationService {
+     }
+ 
+     public List<Loan> readerLoans(Long readerId) { return loans.findByReaderIdOrderByBorrowedAtDesc(readerId); }
+-    public List<Loan> allLoans() { return loans.findAll(); }
++    public List<Loan> allLoans(Loan.Status status, boolean overdueOnly) {
++        if (overdueOnly) return overdueLoans();
++        return status == null ? loans.findAll() : loans.findByStatusOrderByDueAtAsc(status);
++    }
+     public List<Loan> overdueLoans() { return loans.findByStatusAndDueAtBeforeOrderByDueAtAsc(Loan.Status.BORROWED, LocalDate.now()); }
+     public List<OverdueReminder> reminders() { return reminders.findAllByOrderBySentAtDesc(); }
+     public List<Reservation> activeReservations() { return reservations.findByStatusOrderByCreatedAtAsc(Reservation.Status.ACTIVE); }
+diff --git a/src/main/resources/static/app.js b/src/main/resources/static/app.js
+index 9a178e1..4b93646 100644
+--- a/src/main/resources/static/app.js
++++ b/src/main/resources/static/app.js
+@@ -88,9 +88,14 @@ async function ensureCatalog(){if(!state.books.length)state.books=await api('/ap
+ async function loadCirculation(){
+   await ensureCatalog();
+   if(admin()){
+-    [state.loans,state.reservations,state.reminders]=await Promise.all([api('/api/circulation/admin/loans'),api('/api/circulation/admin/reservations'),api('/api/circulation/admin/reminders')]);
++    const params=new URLSearchParams();
++    if($('#loanStatus').value)params.set('status',$('#loanStatus').value);
++    if($('#overdueOnly').checked)params.set('overdueOnly','true');
++    [state.loans,state.reservations,state.reminders]=await Promise.all([api(`/api/circulation/admin/loans${params.toString()?`?${params}`:''}`),api('/api/circulation/admin/reservations'),api('/api/circulation/admin/reminders')]);
+   }else{
+     [state.loans,state.reservations]=await Promise.all([api(`/api/circulation/readers/${state.me.readerId}/loans`),api(`/api/circulation/readers/${state.me.readerId}/reservations`)]);
++    if($('#loanStatus').value)state.loans=state.loans.filter(l=>l.status===$('#loanStatus').value);
++    if($('#overdueOnly').checked)state.loans=state.loans.filter(isOverdue);
+   }
+   $('#loanRows').innerHTML=state.loans.length?state.loans.map(l=>{const overdue=isOverdue(l);return `<tr><td>${l.id}</td><td>${escapeHtml(l.reader.name)}</td><td>${escapeHtml(l.book.title)}</td><td>${l.borrowedAt}</td><td>${l.dueAt}</td><td>${l.status==='BORROWED'?status(overdue?'已逾期':'在借',overdue?'warn':''):status('已归还')}</td><td>¥${l.fine||0}</td><td><div class="actions">${l.status==='BORROWED'?`<button onclick="renewLoan(${l.id})">续借</button>${admin()?`<button onclick="returnLoan(${l.id})">还书</button>${overdue?`<button onclick="remindLoan(${l.id})">催还</button>`:''}`:''}`:''}</div></td></tr>`}).join(''):empty(8);
+   $('#reservationRows').innerHTML=state.reservations.length?state.reservations.map(r=>`<tr><td>${r.id}</td><td>${escapeHtml(r.reader.name)}</td><td>${escapeHtml(r.book.title)}</td><td>${r.createdAt.replace('T',' ')}</td><td>${status(r.status==='ACTIVE'?'预约中':r.status)}</td><td>${r.status==='ACTIVE'?`<button onclick="cancelReservation(${r.id})">取消</button>`:''}</td></tr>`).join(''):empty(6);
+@@ -98,6 +103,7 @@ async function loadCirculation(){
+ }
+ $('#borrowBtn').onclick=()=>circulationModal('办理借书','/api/circulation/borrow');
+ $('#reserveBtn').onclick=()=>circulationModal('办理预约','/api/circulation/reserve');
++$('#filterLoans').onclick=()=>loadCirculation().catch(e=>notify(e.message,true));
+ async function circulationModal(title,path){await ensureCatalog();const readerId=admin()?`<label>读者<select name="readerId">${state.readers.map(r=>`<option value="${r.id}">${escapeHtml(r.name)}（${escapeHtml(r.cardNumber)}）</option>`).join('')}</select></label>`:`<input type="hidden" name="readerId" value="${state.me.readerId}">`;openModal(title,`${readerId}<label>图书<select name="bookId">${state.books.map(b=>`<option value="${b.id}">${escapeHtml(b.title)}（可借 ${b.availableCopies}）</option>`).join('')}</select></label>`,async f=>{const x=Object.fromEntries(f);await api(`${path}?readerId=${x.readerId}&bookId=${x.bookId}`,{method:'POST'});notify(`${title}成功`);await loadCirculation()})}
+ window.renewLoan=async id=>act(`/api/circulation/loans/${id}/renew`,'续借成功');
+ window.returnLoan=async id=>act(`/api/circulation/loans/${id}/return`,'还书成功');
+diff --git a/src/main/resources/static/index.html b/src/main/resources/static/index.html
+index 6a0e991..0ab5a61 100644
+--- a/src/main/resources/static/index.html
++++ b/src/main/resources/static/index.html
+@@ -61,7 +61,7 @@
+       </section>
+ 
+       <section id="circulation" class="view">
+-        <div class="toolbar"><button id="borrowBtn" class="primary">办理借书</button><button id="reserveBtn">办理预约</button></div>
++        <div class="toolbar"><button id="borrowBtn" class="primary">办理借书</button><button id="reserveBtn">办理预约</button><select id="loanStatus"><option value="">全部借阅</option><option value="BORROWED">在借</option><option value="RETURNED">已归还</option></select><label><input id="overdueOnly" type="checkbox">仅看逾期</label><button id="filterLoans">筛选</button></div>
+         <div class="panel table-wrap"><div class="panel-head"><h3>借阅记录</h3></div><table><thead><tr><th>ID</th><th>读者</th><th>图书</th><th>借出日期</th><th>应还日期</th><th>状态</th><th>罚金</th><th>操作</th></tr></thead><tbody id="loanRows"></tbody></table></div>
+         <div class="panel table-wrap"><div class="panel-head"><h3>当前预约</h3></div><table><thead><tr><th>ID</th><th>读者</th><th>图书</th><th>预约时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="reservationRows"></tbody></table></div>
+         <div class="panel table-wrap" data-admin><div class="panel-head"><h3>催还记录</h3></div><table><thead><tr><th>ID</th><th>读者</th><th>图书</th><th>接收方</th><th>催还内容</th><th>时间</th></tr></thead><tbody id="reminderRows"></tbody></table></div>
+diff --git a/src/test/java/com/chopinhhm/library/modulec/CirculationRulesTest.java b/src/test/java/com/chopinhhm/library/modulec/CirculationRulesTest.java
+new file mode 100644
+index 0000000..f33779a
+--- /dev/null
++++ b/src/test/java/com/chopinhhm/library/modulec/CirculationRulesTest.java
+@@ -0,0 +1,51 @@
++package com.chopinhhm.library.modulec;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.mockito.Mockito.when;
++
++import com.chopinhhm.library.common.BusinessException;
++import com.chopinhhm.library.moduleb.BookRepository;
++import com.chopinhhm.library.moduleb.ReaderRepository;
++import com.chopinhhm.library.moduled.BorrowingEligibilityService;
++import com.chopinhhm.library.moduled.FineCalculator;
++import java.time.LocalDate;
++import java.util.Collections;
++import java.util.Optional;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++import org.mockito.Mock;
++import org.mockito.junit.jupiter.MockitoExtension;
++
++@ExtendWith(MockitoExtension.class)
++class CirculationRulesTest {
++    @Mock private BookRepository books;
++    @Mock private ReaderRepository readers;
++    @Mock private LoanRepository loans;
++    @Mock private ReservationRepository reservations;
++    @Mock private OverdueReminderRepository reminders;
++    @Mock private BorrowingEligibilityService eligibility;
++    @Mock private FineCalculator fineCalculator;
++
++    @Test
++    void refusesToRenewAnOverdueLoan() {
++        Loan loan = new Loan();
++        loan.setDueAt(LocalDate.now().minusDays(1));
++        when(loans.findById(5L)).thenReturn(Optional.of(loan));
++        CirculationService service = service();
++
++        BusinessException error = assertThrows(BusinessException.class, () -> service.renew(5L));
++
++        assertEquals("逾期图书不能续借，请先归还并结算罚金", error.getMessage());
++    }
++
++    @Test
++    void filtersAdministrativeLoansByStatus() {
++        when(loans.findByStatusOrderByDueAtAsc(Loan.Status.RETURNED)).thenReturn(Collections.<Loan>emptyList());
++        assertEquals(0, service().allLoans(Loan.Status.RETURNED, false).size());
++    }
++
++    private CirculationService service() {
++        return new CirculationService(books, readers, loans, reservations, reminders, eligibility, fineCalculator);
++    }
++}
