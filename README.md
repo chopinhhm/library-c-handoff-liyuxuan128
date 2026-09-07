@@ -1,26 +1,14 @@
-# C 核心业务流程 每日代码交接
+# 李雨轩第二天现成代码
 
-对应成员：**Liyuxuan128**  
-目标主仓库分支：$(System.Collections.Hashtable.branch)
+这份代码已经写好，不需要修改任何代码。
 
-本仓库用于存放按日期发布的代码改动包和说明。成员在自己的电脑上下载改动、应用到主仓库、运行测试，再使用自己的 GitHub 身份提交和推送。
+- 使用人：李雨轩
+- GitHub 账号：`Liyuxuan128`
+- 主仓库：`https://github.com/chopinhhm/library-borrowing-system`
+- 要提交到的分支：`feature/C-circulation`
+- 下载文件：`第2天_李雨轩_现成代码.zip`
+- 提交说明：`feat(C): improve loan filters and renewal rules`
 
-## 每日操作
+请按组长提供的《图书借阅系统三天现成代码提交操作说明》操作：下载压缩包，用 GitHub Desktop 克隆主仓库，切换到指定分支，把“现成代码”文件夹中的 `docs` 和 `src` 复制到主仓库文件夹，最后点击 Commit 和 Push origin。
 
-`ash
-git clone https://github.com/chopinhhm/library-borrowing-system.git
-cd library-borrowing-system
-git checkout feature/C-circulation
-git pull origin feature/C-circulation
-
-# 将当天补丁下载到当前目录后
-git apply dayXX.patch
-mvn test
-git diff
-
-git add .
-git commit -m "feat: complete assigned module improvement"
-git push origin feature/C-circulation
-`
-
-提交前请确认 git config user.email 是本人 GitHub 已验证邮箱。不要共享 GitHub Token。
+不要提交到 `main`，不要改代码，不要使用组长的 GitHub 账号。
